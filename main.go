@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
@@ -28,9 +30,29 @@ const (
 	port = 23234
 )
 
+var (
+	red      = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render
+	green    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render
+	yellow   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render
+	blue     = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Render
+	gray     = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render
+	darkgray = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render
+)
+
+func (a *app) loadLevels() {
+	entries, err := os.ReadDir("./map")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, e := range entries {
+		a.loadLevel(strings.Split(e.Name(), ".")[0])
+	}
+}
+
 func (a *app) loadLevel(world string) {
 	tmp := [16][40]uint8{}
-	file, err := os.Open(world + ".txt")
+	file, err := os.Open("./map/" + world + ".txt")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -49,10 +71,17 @@ func (a *app) loadLevel(world string) {
 			a.links[world] = append(a.links[world], line)
 			continue
 		}
-		for j, c := range line {
+		for j, c := range []byte(line) {
 			switch c {
-			case '#':
-				tmp[i][j] = 1
+			case 'S':
+				tmp[i][j] = '.'
+				a.StartPos = Position{
+					x:     j,
+					y:     i,
+					world: world,
+				}
+			default:
+				tmp[i][j] = c
 			}
 		}
 	}
@@ -66,9 +95,8 @@ func (a *app) loadLevel(world string) {
 func main() {
 	a := new(app)
 	a.links = make(map[string]([]string))
-	a.world = make(map[string]([16][40]uint8))
-	a.loadLevel("START")
-	a.loadLevel("SECOND")
+	a.world = make(map[string]([16][40]byte))
+	a.loadLevels()
 	a.Positions = make(map[string]Position)
 	a.Chans = make(map[string](chan tea.Msg))
 	go func() {
@@ -143,6 +171,8 @@ type (
 	}
 	rerenderMsg struct {
 	}
+	RespawnMsg struct {
+	}
 )
 
 // app contains a wish server and the list of running programs.
@@ -155,6 +185,7 @@ type app struct {
 	StateMutex sync.RWMutex
 	world      map[string]([16][40]uint8)
 	links      map[string]([]string)
+	StartPos   Position
 }
 
 func (a *app) send2(msg tea.Msg) {
@@ -175,14 +206,16 @@ func (a *app) ProgramHandler(s ssh.Session) *tea.Program {
 	}
 
 	m := model{
-		term:   pty.Term,
-		width:  pty.Window.Width,
-		height: pty.Window.Height,
-		pos: Position{
-			world: "START",
-			x:     5,
-			y:     5,
-		},
+		term:      pty.Term,
+		width:     pty.Window.Width,
+		height:    pty.Window.Height,
+		pos:       a.StartPos,
+		health:    7,
+		maxHealth: 7,
+		level:     1,
+		xp:        0,
+		combat:    false,
+		destroyed: map[Position]bool{},
 	}
 	m.app = a
 	m.id = s.RemoteAddr().String() + s.User()
@@ -216,6 +249,17 @@ type model struct {
 	width      int
 	height     int
 	pos        Position
+	health     int
+	maxHealth  int
+	level      int
+	xp         int
+	combat     bool
+	falling    bool
+	enemy      *Enemy
+	destroyed  map[Position]bool
+	text       string
+	selection  int
+	picker     PickerModel
 }
 
 func (m model) Init() tea.Cmd {
@@ -245,7 +289,44 @@ func (m *model) doWarp() {
 	}
 }
 
+func (m *model) revealSecrets() {
+	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
+	if cell == '$' {
+		m.destroyed[m.pos] = true
+	}
+}
+
+func (m *model) checkTraps() tea.Cmd {
+	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
+	if cell == 'x' {
+		m.destroyed[m.pos] = true
+		m.text = "You fell in a hole!"
+		m.falling = true
+		var cmd tea.Cmd = func() tea.Msg {
+			time.Sleep(time.Second)
+			return RespawnMsg{}
+		}
+		return cmd
+	}
+	return nil
+}
+
+func (m *model) startCombat() {
+	if _, ok := m.destroyed[m.pos]; ok {
+		return
+	}
+	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
+	if cell == 'b' {
+		m.text = ""
+		m.combat = true
+		m.enemy = letterToEnemy(cell)
+	}
+}
+
 func (m *model) isBlocked() bool {
+	if _, ok := m.destroyed[m.pos]; ok {
+		return false
+	}
 	if m.pos.y < 0 {
 		return false
 	}
@@ -259,13 +340,43 @@ func (m *model) isBlocked() bool {
 		return false
 	}
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
-	if cell != 0 {
+	if cell == '#' {
 		return true
 	}
 	return false
 }
 
-func (m *model) move(x int, y int) {
+type Enemy struct {
+	health    int
+	maxhealth int
+	name      string
+}
+
+func letterToEnemy(c byte) *Enemy {
+	switch c {
+	case 'b':
+		return &Enemy{
+			name:      "a bat",
+			health:    5,
+			maxhealth: 5,
+		}
+	default:
+		// this should never happen!
+		return &Enemy{
+			name:      "MISSINGNO",
+			health:    100,
+			maxhealth: 100,
+		}
+	}
+}
+func (m *model) move(x int, y int) tea.Cmd {
+	var cmd tea.Cmd
+	if m.falling {
+		return nil
+	}
+	if m.combat {
+		return nil
+	}
 	m.pos.x += x
 	m.pos.y += y
 	if m.isBlocked() {
@@ -273,39 +384,68 @@ func (m *model) move(x int, y int) {
 		m.pos.y -= y
 	} else {
 		m.doWarp()
+		m.startCombat()
+		cmd = m.checkTraps()
+		m.revealSecrets()
 		m.send(moveMsg{
 			id:  m.id,
 			pos: m.pos,
 		})
 	}
+	return cmd
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
 		m.width = msg.Width
 
+	case RespawnMsg:
+		m.falling = false
+		m.pos = m.app.StartPos
+		m.text = ""
+		m.send(moveMsg{
+			id:  m.id,
+			pos: m.pos,
+		})
 	case moveMsg:
 		// do something
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "enter":
+			if m.combat {
+				m.combat = false
+				m.destroyed[m.pos] = true
+			}
 		case "left", "h", "a":
-			m.move(-1, 0)
+			cmd = m.move(-1, 0)
 		case "right", "l", "d":
-			m.move(1, 0)
+			cmd = m.move(1, 0)
 		case "up", "k", "w":
-			m.move(0, -1)
+			cmd = m.move(0, -1)
 		case "down", "j", "s":
-			m.move(0, 1)
+			cmd = m.move(0, 1)
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
 	}
-	return m, nil
+	cmds = append(cmds, cmd)
+	if m.combat {
+		m.picker, cmd = m.picker.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) View() string {
+	var mainBox = lipgloss.NewStyle().Width(40).Height(16).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("63"))
 	players := []Position{}
 	m.app.StateMutex.RLock()
 	for id, pos := range m.app.Positions {
@@ -319,26 +459,61 @@ func (m model) View() string {
 	}
 	m.app.StateMutex.RUnlock()
 	var s string
-	for r, row := range m.app.world[m.pos.world] {
-	outer:
-		for c, cell := range row {
-			for r == m.pos.y && c == m.pos.x {
-				s += "U"
-				continue outer
-			}
-			for _, pos := range players {
-				if r == pos.y && c == pos.x {
-					s += "O"
+	if !m.combat {
+		for r, row := range m.app.world[m.pos.world] {
+		outer:
+			for c, cell := range row {
+				for r == m.pos.y && c == m.pos.x {
+					s += green("U")
 					continue outer
 				}
+				if _, ok := m.destroyed[Position{x: c, y: r, world: m.pos.world}]; ok {
+					if cell == 'x' {
+						cell = 'X'
+					} else if cell == '$' {
+						cell = 'Z'
+					} else {
+						cell = '.'
+					}
+				}
+				for _, pos := range players {
+					if r == pos.y && c == pos.x {
+						s += blue("O")
+						continue outer
+					}
+				}
+				if cell == 'x' {
+					s += " "
+				} else if cell == 'Z' {
+					s += darkgray("#")
+				} else if cell == 'X' {
+					s += gray("X")
+				} else if cell == 'b' {
+					s += red("b")
+				} else if cell == '.' {
+					s += " "
+				} else if cell == '$' {
+					s += "#"
+				} else {
+					s += string([]byte{cell})
+				}
 			}
-			if cell == 1 {
-				s += "#"
-			} else {
-				s += " "
-			}
+			s += "\n"
 		}
-		s += "\n"
+		last := len(s) - 1
+		s = s[:last]
+		s = mainBox.Render(s)
+	} else {
+		// combat oh no
+		s += fmt.Sprintf("You have entered combat with %s!\n\n", m.enemy.name)
+		s += fmt.Sprintf("Enemy health: %d / %d\n", m.enemy.health, m.enemy.maxhealth)
+		s += m.picker.View()
+		s = mainBox.Render(s)
 	}
+
+	s += "\n"
+	s += fmt.Sprintf(" Level:  %d\n", m.level)
+	s += fmt.Sprintf(" Health: %d / %d\n", m.health, m.maxHealth)
+	s += red(fmt.Sprintf("\n           %s\n", m.text))
 	return s
 }
