@@ -42,6 +42,8 @@ async function makePNG() {
               data += "$";
             } else if (r === 255 && g === 0 && b === 255) {
               data += "x";
+            } else if (g === 255 && b === 0) {
+              data += ["P", "0", "1", "2", "3"][r];
             } else if (r > 0 && g === 0 && b === 0) {
               data += ["b"][255 - r];
             } else {

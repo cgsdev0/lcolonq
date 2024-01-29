@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -12,8 +13,7 @@ type PickerModel struct {
 }
 
 type PickerItem struct {
-	text    string
-	checked bool
+	text string
 }
 
 func (m *PickerModel) Init() tea.Cmd {
@@ -30,38 +30,37 @@ func (m *PickerModel) Update(msg tea.Msg) (PickerModel, tea.Cmd) {
 
 func (m *PickerModel) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
-	case "esc", "ctrl+c":
-		return tea.Quit
-	case " ", "enter":
-		m.items[m.item].checked = !m.items[m.item].checked
-	case "up":
-		if m.item > 0 {
-			m.item--
+	case "enter":
+		switch strings.Split(m.items[m.item].text, " ")[0] {
+		case "run":
+			return RunCmd
+		case "melee":
+			return MeleeCmd
+		case "healing":
+			return HealingCmd
 		}
-	case "down":
-		if m.item+1 < len(m.items) {
-			m.item++
+	case "up", "k", "w":
+		m.item--
+		if m.item < 0 {
+			m.item = len(m.items) - 1
+		}
+	case "down", "j", "s":
+		m.item++
+		if m.item >= len(m.items) {
+			m.item = 0
 		}
 	}
 	return nil
 }
 
 func (m *PickerModel) View() string {
-	return m.renderList("Choose your action:", m.items, m.item)
-}
-
-func (m *PickerModel) renderList(header string, items []PickerItem, selected int) string {
-	out := "~ " + header + ":\n"
-	for i, item := range items {
-		sel := " "
-		if i == selected {
-			sel = ">"
+	var out string
+	for i, item := range m.items {
+		if i == m.item {
+			out += blue(fmt.Sprintf("%s %s", ">", item.text)) + "\n"
+		} else {
+			out += fmt.Sprintf("  %s\n", item.text)
 		}
-		check := " "
-		if items[i].checked {
-			check = "✓"
-		}
-		out += fmt.Sprintf("%s [%s] %s\n", sel, check, item.text)
 	}
 	return out
 }
