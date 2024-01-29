@@ -1,0 +1,5 @@
+[[task]]
+  id = "dev"
+  type = "long"
+  cmd = "go run ."
+  watch = [ "*.go" ]
