@@ -22,42 +22,34 @@ async function makePNG() {
   for (let gr = 0; gr < 10; gr++) {
     for (let gc = 0; gc < 10; gc++) {
       const filename = `../map/${gr}x${gc}.txt`;
+      const metaname = `../meta/${gr}x${gc}.txt`;
       console.log(filename);
       let data = "";
+      data += `${gr - 1}x${gc}\n`;
+      data += `${gr}x${gc + 1}\n`;
+      data += `${gr + 1}x${gc}\n`;
+      data += `${gr}x${gc - 1}\n`;
+      const buffer = new ArrayBuffer(40 * 16 * 4);
+      const view = new Uint8Array(buffer);
       for (let ir = 0; ir < h / 10; ir++) {
         for (let ic = 0; ic < w / 10; ic++) {
           const row = (gr * h) / 10 + ir;
           const col = (gc * w) / 10 + ic;
           const i = (row * w + col) * 4;
+          const j = (ir * (w / 10) + ic) * 4;
           const r = rawCelData.readUint8(i);
           const g = rawCelData.readUint8(i + 1);
           const b = rawCelData.readUint8(i + 2);
           const a = rawCelData.readUint8(i + 3);
-          if (a === 0) {
-            data += ".";
-          } else {
-            if (r === 0 && g === 0 && b === 255) {
-              data += "S";
-            } else if (r === 255 && g === 255 && b === 0) {
-              data += "$";
-            } else if (r === 255 && g === 0 && b === 255) {
-              data += "x";
-            } else if (g === 255 && b === 0) {
-              data += ["P", "0", "1", "2", "3"][r];
-            } else if (r > 0 && g === 0 && b === 0) {
-              data += ["b"][255 - r];
-            } else {
-              data += "#";
-            }
-          }
+          view[j] = r;
+          view[j + 1] = g;
+          view[j + 2] = b;
+          view[j + 3] = a;
         }
-        data += "\n";
+        buffer.data += "\n";
       }
-      data += `${gr - 1}x${gc}\n`;
-      data += `${gr}x${gc + 1}\n`;
-      data += `${gr + 1}x${gc}\n`;
-      data += `${gr}x${gc - 1}\n`;
-      fs.writeFileSync(filename, data);
+      fs.writeFileSync(metaname, data);
+      fs.writeFileSync(filename, Buffer.from(buffer));
     }
   }
 }

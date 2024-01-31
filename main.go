@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
 	"math"
@@ -14,30 +13,18 @@ import (
 	"syscall"
 	"time"
 
-	// An example Bubble Tea server. This will put an ssh session into alt screen
-	// and continually print up to date terminal information.
-
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
-	"github.com/justinian/dice"
 
 	bm "github.com/charmbracelet/wish/bubbletea"
 
 	lm "github.com/charmbracelet/wish/logging"
 	"github.com/muesli/termenv"
 )
-
-func Roll(what string) int {
-	result, _, err := dice.Roll(what)
-	if err != nil {
-		panic(err)
-	}
-	return result.Int()
-}
 
 const (
 	host = "localhost"
@@ -61,14 +48,127 @@ func (a *app) loadLevels() {
 
 	for _, e := range entries {
 		a.loadLevel(strings.Split(e.Name(), ".")[0])
+		a.loadMeta(strings.Split(e.Name(), ".")[0])
 	}
 }
 
+type Color struct {
+	r byte
+	g byte
+	b byte
+	a byte
+}
+
+// ITEMS
+const (
+	ITEM_POTION = iota
+)
+
+func (c Color) toItem() byte {
+	return 255 - c.g
+}
+
+// ENEMIES
+const (
+	ENEMY_BAT = iota
+)
+
+func (c Color) toEnemy() byte {
+	return 255 - c.r
+}
+
+// 255 different items
+func (c Color) isItem() bool {
+	return c.g > 0 && c.a == 255 && c.r == 0 && c.b == 0
+}
+
+func (c Color) isSpawn() bool {
+	return c.b == 255 && c.a == 255 && c.r == 0 && c.g == 0
+}
+func (c Color) isSecret() bool {
+	return c.r == 255 && c.a == 255 && c.g == 255 && c.b == 0
+}
+func (c Color) isHole() bool {
+	return c.r == 255 && c.a == 255 && c.b == 255 && c.g == 0
+}
+func (c Color) isEnemy() bool {
+	return c.r > 0 && c.a == 255 && c.g == 0 && c.b == 0
+}
+func (c Color) isWall() bool {
+	return c.r == 0 && c.a == 255 && c.g == 0 && c.b == 0
+}
+
+func (c Color) render(destroyed bool) string {
+	if c.isWall() {
+		return "#"
+	}
+	if c.isSecret() {
+		if destroyed {
+			return darkgray("#")
+		}
+		return "#"
+	}
+	if c.isHole() && destroyed {
+		return gray("X")
+	}
+	if c.isItem() && !destroyed {
+		var letter string
+		switch c.toItem() {
+		case ITEM_POTION:
+			letter = "P"
+		}
+		return yellow(letter)
+	}
+	if c.isEnemy() && !destroyed {
+		var letter string
+		switch c.toEnemy() {
+		case ENEMY_BAT:
+			letter = "b"
+		}
+		return red(letter)
+	}
+	return " "
+}
+
 func (a *app) loadLevel(world string) {
-	tmp := [16][40]uint8{}
 	file, err := os.Open("./map/" + world + ".txt")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
+	}
+	defer file.Close()
+	tmp := [16][40]Color{}
+	buf := make([]byte, 4)
+	i := 0
+	for {
+		n, err := file.Read(buf)
+		if n == 0 || err != nil {
+			break
+		}
+		j := i / 40
+		k := i % 40
+		c := Color{
+			r: buf[0],
+			g: buf[1],
+			b: buf[2],
+			a: buf[3],
+		}
+		if c.isSpawn() {
+			fmt.Println("i found spawn")
+			a.StartPos = Position{
+				x:     k,
+				y:     j,
+				world: world,
+			}
+		}
+		tmp[j][k] = c
+		i++
+	}
+	a.world[world] = tmp
+}
+func (a *app) loadMeta(world string) {
+	file, err := os.Open("./meta/" + world + ".txt")
+	if err != nil {
+		panic(err)
 	}
 	defer file.Close()
 
@@ -77,49 +177,33 @@ func (a *app) loadLevel(world string) {
 	for scanner.Scan() {
 		i++
 		line := scanner.Text()
-		if i == 16 {
+		if i == 0 {
 			a.links[world] = []string{line}
 			continue
 		}
-		if i > 16 {
-			a.links[world] = append(a.links[world], line)
-			continue
-		}
-		for j, c := range []byte(line) {
-			switch c {
-			case 'S':
-				tmp[i][j] = '.'
-				a.StartPos = Position{
-					x:     j,
-					y:     i,
-					world: world,
-				}
-			default:
-				tmp[i][j] = c
-			}
-		}
+		a.links[world] = append(a.links[world], line)
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	a.world[world] = tmp
 }
 
 func main() {
 	a := new(app)
 	a.links = make(map[string]([]string))
-	a.world = make(map[string]([16][40]byte))
+	a.world = make(map[string]([16][40]Color))
 	a.loadLevels()
 	a.Positions = make(map[string]Position)
 	a.Chans = make(map[string](chan tea.Msg))
 	go func() {
 		fmt.Println("I am the server!")
-		fmt.Printf("%v\n", a.Chans)
 		for {
+			updates := []tea.Msg{}
 			updated := false
-			a.ChansMutex.Lock()
 			time.Sleep(time.Millisecond * 100)
+			a.ChansMutex.Lock()
+			a.StateMutex.Lock()
 			for _, ch := range a.Chans {
 			loop:
 				for {
@@ -131,23 +215,23 @@ func main() {
 						break loop
 					}
 					switch msg := thing.(type) {
+					case HoleMsg:
+						updates = append(updates, msg)
+						updated = true
 					case DeadMsg:
-						a.StateMutex.Lock()
 						delete(a.Positions, msg.id)
-						a.StateMutex.Unlock()
 						updated = true
 					case moveMsg:
 						// fmt.Printf("got a move msg from %s\n", msg.id)
-						a.StateMutex.Lock()
 						a.Positions[msg.id] = msg.pos
-						a.StateMutex.Unlock()
 						updated = true
 					}
 				}
 			}
+			a.StateMutex.Unlock()
 			a.ChansMutex.Unlock()
 			if updated {
-				a.send2(rerenderMsg{})
+				a.send2(rerenderMsg{updates: updates})
 			}
 		}
 	}()
@@ -189,6 +273,7 @@ type (
 		pos Position
 	}
 	rerenderMsg struct {
+		updates []tea.Msg
 	}
 	RespawnMsg struct {
 	}
@@ -203,6 +288,10 @@ type (
 	DefeatEnemyMsg struct {
 	}
 	YourTurnMsg struct {
+	}
+	HoleMsg struct {
+		id  string
+		pos Position
 	}
 	DeadMsg struct {
 		id string
@@ -246,7 +335,7 @@ type app struct {
 	Chans      map[string](chan tea.Msg)
 	ChansMutex sync.Mutex
 	StateMutex sync.RWMutex
-	world      map[string]([16][40]uint8)
+	world      map[string]([16][40]Color)
 	links      map[string]([]string)
 	StartPos   Position
 }
@@ -307,7 +396,6 @@ type Position struct {
 	y     int
 }
 
-// Just a generic tea.Model to demo terminal information of ssh.
 type model struct {
 	*app
 	serverChan chan tea.Msg
@@ -362,7 +450,6 @@ func (m *model) doWarp() {
 }
 
 func (m *model) xpCurve(x int) int {
-	// f(x) = t*(1+b)x
 	return int(math.Pow(1+0.5, float64(x-1))*1000) - 1000
 }
 
@@ -371,26 +458,30 @@ func (m *model) pickupItems() {
 		return
 	}
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
-	if cell == 'P' {
-		m.destroyed[m.pos] = true
-		m.potions++
-		m.text = "Found a healing potion!"
+	if cell.isItem() {
+		switch cell.toItem() {
+		case ITEM_POTION:
+			m.destroyed[m.pos] = true
+			m.potions++
+			m.text = "Found a healing potion!"
+		}
 	}
 }
 
 func (m *model) revealSecrets() {
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
-	if cell == '$' {
+	if cell.isSecret() {
 		m.destroyed[m.pos] = true
 	}
 }
 
 func (m *model) checkTraps() tea.Cmd {
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
-	if cell == 'x' {
+	if cell.isHole() {
 		m.destroyed[m.pos] = true
 		m.text = "You fell in a hole!"
 		m.falling = true
+		m.send(HoleMsg{id: m.id, pos: m.pos})
 		var cmd tea.Cmd = func() tea.Msg {
 			time.Sleep(time.Second)
 			return RespawnMsg{}
@@ -421,11 +512,11 @@ func (m *model) startCombat() {
 		return
 	}
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
-	if isEnemy(cell) {
+	if cell.isEnemy() {
 		m.text = ""
 		m.combattext = ""
 		m.combat = true
-		m.enemy = letterToEnemy(cell)
+		m.enemy = createEnemy(cell.toEnemy())
 		m.updateOptions()
 	}
 }
@@ -447,7 +538,7 @@ func (m *model) isBlocked() bool {
 		return false
 	}
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
-	if cell == '#' {
+	if cell.isWall() {
 		return true
 	}
 	return false
@@ -476,39 +567,6 @@ func (m *model) playerDamage() int {
 	return Roll("1d4")
 }
 
-//go:embed art/bat
-var batArt string
-
-func leftpad(art string, n int) string {
-	thing := strings.Split(art, "\n")
-	var pad = strings.Repeat(" ", n)
-	for i := range thing {
-		thing[i] = pad + thing[i]
-	}
-	return strings.Join(thing, "\n")
-}
-func letterToEnemy(c byte) *Enemy {
-	switch c {
-	case 'b':
-		return &Enemy{
-			name:      "a bat",
-			level:     1,
-			health:    5,
-			maxhealth: 5,
-			art:       leftpad(batArt, 5),
-			ac:        12,
-			damage:    "1d1",
-			attack:    "1d20",
-		}
-	default:
-		// this should never happen!
-		return &Enemy{
-			name:      "MISSINGNO",
-			health:    100,
-			maxhealth: 100,
-		}
-	}
-}
 func (m *model) move(x int, y int) tea.Cmd {
 	var cmd tea.Cmd
 	if m.falling {
@@ -546,6 +604,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
 		m.width = msg.Width
+
+	case HoleMsg:
+		if m.pos.world == msg.pos.world {
+			m.destroyed[msg.pos] = true
+		}
+	case rerenderMsg:
+		for _, u := range msg.updates {
+			m2, cmd := m.Update(u)
+			if m3, ok := m2.(model); ok {
+				m = m3
+			}
+			cmds = append(cmds, cmd)
+		}
 
 	case HealingMsg:
 		m.potions--
@@ -664,14 +735,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func isEnemy(b byte) bool {
-	switch b {
-	case 'b':
-		return true
-	}
-	return false
-}
-
 func (m model) View() string {
 	var mainBox = lipgloss.NewStyle().Width(40).Height(16).
 		BorderStyle(lipgloss.NormalBorder()).
@@ -697,17 +760,9 @@ func (m model) View() string {
 					s += green("U")
 					continue outer
 				}
-				if _, ok := m.destroyed[Position{x: c, y: r, world: m.pos.world}]; ok {
-					if cell == 'x' {
-						cell = 'X'
-					} else if cell == '$' {
-						cell = 'Z'
-					} else {
-						cell = '.'
-					}
-				}
-				if isEnemy(cell) {
-					s += red("b")
+				_, destroyed := m.destroyed[Position{x: c, y: r, world: m.pos.world}]
+				if (cell.isEnemy() || cell.isSecret()) && !destroyed {
+					s += cell.render(destroyed)
 					continue outer
 				}
 				for _, pos := range players {
@@ -716,21 +771,7 @@ func (m model) View() string {
 						continue outer
 					}
 				}
-				if cell == 'x' {
-					s += " "
-				} else if cell == 'P' {
-					s += yellow("P")
-				} else if cell == 'Z' {
-					s += darkgray("#")
-				} else if cell == 'X' {
-					s += gray("X")
-				} else if cell == '.' {
-					s += " "
-				} else if cell == '$' {
-					s += "#"
-				} else {
-					s += string([]byte{cell})
-				}
+				s += cell.render(destroyed)
 			}
 			s += "\n"
 		}
