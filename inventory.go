@@ -43,7 +43,7 @@ func (m *Inventory) Count(id int) int {
 func (m *Inventory) Consume(id int) {
 	for s, j := range m.items {
 		if j.id == id {
-			j.qty--
+			m.items[s].qty--
 			if j.qty == 0 {
 				m.items = append(m.items[:s], m.items[s+1:]...)
 			}
