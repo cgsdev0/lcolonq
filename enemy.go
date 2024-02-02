@@ -71,11 +71,11 @@ func createEnemy(c byte) *Enemy {
 			id:        ENEMY_GHOSTS,
 			name:      "the ghosts",
 			level:     3,
-			health:    20,
-			maxhealth: 20,
+			health:    22,
+			maxhealth: 22,
 			art:       leftpad(ghostsArt, 3),
 			ac:        15,
-			damage:    "1d6+1",
+			damage:    "1d6",
 			attack:    "1d20+1",
 		}
 	case ENEMY_MINOTAUR:
@@ -83,12 +83,12 @@ func createEnemy(c byte) *Enemy {
 			id:        ENEMY_MINOTAUR,
 			name:      "the minotaur",
 			level:     4,
-			health:    30,
-			maxhealth: 30,
+			health:    18,
+			maxhealth: 18,
 			art:       leftpad(minotaurArt, 5),
 			ac:        12,
-			damage:    "1d10+1",
-			attack:    "1d20+3",
+			damage:    "1d10",
+			attack:    "1d20+1",
 		}
 	case ENEMY_KING:
 		return &Enemy{

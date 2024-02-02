@@ -179,8 +179,14 @@ func (c Color) render(destroyed bool, x int, y int) string {
 			letter = "P"
 		case ITEM_SWORD1:
 			letter = "S"
+		case ITEM_KINGSLAYER:
+			letter = "ʈ"
+		case ITEM_BONECRUSHER:
+			letter = "¶"
 		case ITEM_HEAVY_ARMOR:
 			letter = "H"
+		case ITEM_LIGHT_ARMOR:
+			letter = "A"
 		default:
 			letter = "I"
 		}
@@ -742,7 +748,6 @@ func (m *model) isBlocked() bool {
 		return true
 	}
 	if cell.isGate() {
-		m.destroyed[m.pos] = true
 		m.text = "The door opened!"
 		return false
 	}
@@ -955,7 +960,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.text = "Level up (cheats)"
 			}
 
-		case "i", "e", "esc":
+		case "i", "e", "esc", "q", "tab":
 			if m.state == OVERWORLD {
 				m.inventory.item = 0
 				m.state = IN_INVENTORY
