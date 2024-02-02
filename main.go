@@ -14,7 +14,9 @@ import (
 	"syscall"
 	"time"
 
+	goaway "github.com/TwiN/go-away"
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
@@ -345,6 +347,7 @@ func main() {
 	a.loadLevels()
 	a.Positions = make(map[string]Position)
 	a.Levels = make(map[string]int)
+	a.Chats = make(map[string]string)
 	a.Chans = make(map[string](chan tea.Msg))
 	go func() {
 		fmt.Println("I am the server!")
@@ -367,11 +370,16 @@ func main() {
 					switch msg := thing.(type) {
 					case levelMsg:
 						a.Levels[msg.id] = msg.level
+					case ChatMsg:
+						a.Chats[msg.id] = msg.msg
+						updated = true
 					case HoleMsg:
 						updates = append(updates, msg)
 						updated = true
 					case DeadMsg:
 						delete(a.Positions, msg.id)
+						delete(a.Chats, msg.id)
+						delete(a.Levels, msg.id)
 						updated = true
 					case moveMsg:
 						// fmt.Printf("got a move msg from %s\n", msg.id)
@@ -445,6 +453,10 @@ type (
 	}
 	YourTurnMsg struct {
 	}
+	ChatMsg struct {
+		id  string
+		msg string
+	}
 	HoleMsg struct {
 		id  string
 		pos Position
@@ -454,8 +466,14 @@ type (
 	DeadMsg struct {
 		id string
 	}
+	ChatClearMsg struct {
+	}
 )
 
+var ChatClearCmd tea.Cmd = func() tea.Msg {
+	time.Sleep(time.Second * 2)
+	return ChatClearMsg{}
+}
 var RunCmd tea.Cmd = func() tea.Msg {
 	return RunMsg{}
 }
@@ -491,6 +509,7 @@ type app struct {
 	progs      []*tea.Program
 	Positions  map[string]Position
 	Levels     map[string]int
+	Chats      map[string]string
 	Chans      map[string](chan tea.Msg)
 	ChansMutex sync.Mutex
 	StateMutex sync.RWMutex
@@ -533,12 +552,16 @@ func (a *app) ProgramHandler(s ssh.Session) *tea.Program {
 		progress:       progress.New(progress.WithSolidFill("63"), progress.WithColorProfile(termenv.ANSI256)),
 		progressHealth: progress.New(progress.WithSolidFill("1"), progress.WithColorProfile(termenv.ANSI256)),
 		inventory:      NewInventory(),
+		chat:           textinput.New(),
 	}
+	m.chat.CharLimit = 30
+	m.chat.Placeholder = "press T to chat"
 	m.app = a
 	m.id = s.RemoteAddr().String() + s.User()
 	a.StateMutex.Lock()
 	a.Positions[m.id] = m.pos
 	a.Levels[m.id] = 1
+	a.Chats[m.id] = ""
 	a.StateMutex.Unlock()
 	m.progress.Width = 19
 	m.progress.ShowPercentage = false
@@ -592,6 +615,7 @@ type model struct {
 	enemy          *Enemy
 	npc            *NPC
 	destroyed      map[Position]bool
+	chattext       string
 	text           string
 	combattext     string
 	selection      int
@@ -601,6 +625,8 @@ type model struct {
 	percent        float64
 	inventory      Inventory
 	hacks          bool
+	chat           textinput.Model
+	allowchat      bool
 }
 
 func (m model) Init() tea.Cmd {
@@ -936,50 +962,63 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.send(DeadMsg{
 			id: m.id,
 		})
+	case ChatClearMsg:
+		m.chattext = ""
+		m.send(ChatMsg{
+			id:  m.id,
+			msg: "",
+		})
 	case tea.KeyMsg:
-		switch msg.String() {
-		// case "enter":
-		// 	if m.combat {
-		// 		m.combat = false
-		// 		m.destroyed[m.pos] = true
-		// 	}
-		case " ":
-			if m.hacks {
-				m.text = m.pos.world
-			}
-		case "0":
-			if m.hacks {
-				m.level++
-				m.send(levelMsg{
-					id:    m.id,
-					level: m.level,
-				})
-				rolledHealth := Roll("1d6+1")
-				m.maxHealth += rolledHealth
-				m.health += rolledHealth
-				m.text = "Level up (cheats)"
-			}
+		if !m.chat.Focused() {
+			switch msg.String() {
+			// case "enter":
+			// 	if m.combat {
+			// 		m.combat = false
+			// 		m.destroyed[m.pos] = true
+			// 	}
+			case "!":
+				m.allowchat = !m.allowchat
+			case "t":
+				m.chat.Focus()
+				return m, nil
+			case " ":
+				if m.hacks {
+					m.text = m.pos.world
+				}
+			case "0":
+				if m.hacks {
+					m.level++
+					m.send(levelMsg{
+						id:    m.id,
+						level: m.level,
+					})
+					rolledHealth := Roll("1d6+1")
+					m.maxHealth += rolledHealth
+					m.health += rolledHealth
+					m.text = "Level up (cheats)"
+				}
 
-		case "i", "e", "esc", "q", "tab":
-			if m.state == OVERWORLD {
-				m.inventory.item = 0
-				m.state = IN_INVENTORY
-			} else if m.state == IN_INVENTORY {
-				m.state = OVERWORLD
+			case "i", "e", "esc", "q", "tab":
+				if m.state == OVERWORLD {
+					m.inventory.item = 0
+					m.state = IN_INVENTORY
+				} else if m.state == IN_INVENTORY {
+					m.state = OVERWORLD
+				}
+			case "left", "h", "a":
+				cmd = m.move(-1, 0)
+			case "right", "l", "d":
+				cmd = m.move(1, 0)
+			case "up", "k", "w":
+				cmd = m.move(0, -1)
+			case "down", "j", "s":
+				cmd = m.move(0, 1)
+			case "ctrl+c":
+				m.send(DeadMsg{
+					id: m.id,
+				})
+				return m, tea.Quit
 			}
-		case "left", "h", "a":
-			cmd = m.move(-1, 0)
-		case "right", "l", "d":
-			cmd = m.move(1, 0)
-		case "up", "k", "w":
-			cmd = m.move(0, -1)
-		case "down", "j", "s":
-			cmd = m.move(0, 1)
-		case "ctrl+c":
-			m.send(DeadMsg{
-				id: m.id,
-			})
-			return m, tea.Quit
 		}
 	}
 	cmds = append(cmds, cmd)
@@ -991,15 +1030,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.picker, cmd = m.picker.Update(msg)
 		cmds = append(cmds, cmd)
 	}
+	if m.chat.Focused() {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "enter":
+				m.send(ChatMsg{
+					id:  m.id,
+					msg: m.chat.Value(),
+				})
+				m.chattext = m.chat.Value()
+				m.chat.Blur()
+				m.chat.SetValue("")
+				return m, ChatClearCmd
+			}
+		}
+	}
+
+	// update chat
+	m.chat, cmd = m.chat.Update(msg)
+	cmds = append(cmds, cmd)
+
 	return m, tea.Batch(cmds...)
 }
 
 type Player struct {
 	pos   Position
 	level int
+	chat  string
 }
 
 func (m model) View() string {
+	var chatBubble = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("63"))
 	var mainBox = lipgloss.NewStyle().Width(40).Height(16).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color("63"))
@@ -1012,7 +1075,7 @@ func (m model) View() string {
 		if id == m.id {
 			continue
 		}
-		players = append(players, Player{pos: pos, level: m.app.Levels[id]})
+		players = append(players, Player{pos: pos, level: m.app.Levels[id], chat: m.app.Chats[id]})
 	}
 	m.app.StateMutex.RUnlock()
 	var s string
@@ -1049,6 +1112,16 @@ func (m model) View() string {
 		last := len(s) - 1
 		s = s[:last]
 		s = mainBox.Render(s)
+		if m.allowchat {
+			if m.chattext != "" {
+				s = lipgloss.PlaceOverlay(m.pos.x, m.pos.y-2, chatBubble.Render(m.chattext), s)
+			}
+			for _, p := range players {
+				if p.chat != "" {
+					s = lipgloss.PlaceOverlay(p.pos.x, p.pos.y-2, chatBubble.Render(goaway.Censor(p.chat)), s)
+				}
+			}
+		}
 	} else {
 		// combat oh no
 		if m.state == IN_COMBAT {
@@ -1077,6 +1150,11 @@ func (m model) View() string {
 	healthBar += fmt.Sprintf("\n  Health: %d / %d\n", m.health, m.maxHealth)
 	bars := lipgloss.JoinHorizontal(lipgloss.Top, xpBar, healthBar)
 	s += bars
-	s += red(fmt.Sprintf("\n           %s\n", m.text))
+	s += red(fmt.Sprintf("\n           %s", m.text)) + "\n"
+	if m.allowchat {
+		s += m.chat.View()
+	} else {
+		s += gray("Chat disabled (press '!' to enable)")
+	}
 	return s
 }
