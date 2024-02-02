@@ -41,6 +41,11 @@ async function makePNG() {
           const g = rawCelData.readUint8(i + 1);
           const b = rawCelData.readUint8(i + 2);
           const a = rawCelData.readUint8(i + 3);
+          if (r === 0 && a === 255 && b > 0 && b < 255 && g === 0) {
+            // This is an NPC; generate placeholder dialogue
+            const type = 254 - b;
+            data += `${ic}x${ir} placeholder ${type}\n`;
+          }
           view[j] = r;
           view[j + 1] = g;
           view[j + 2] = b;
@@ -48,7 +53,7 @@ async function makePNG() {
         }
         buffer.data += "\n";
       }
-      fs.writeFileSync(metaname, data);
+      // fs.writeFileSync(metaname, data);
       fs.writeFileSync(filename, Buffer.from(buffer));
     }
   }

@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -60,22 +61,16 @@ type Color struct {
 	a byte
 }
 
-// ITEMS
-const (
-	ITEM_POTION = iota
-)
-
-func (c Color) toItem() byte {
-	return 255 - c.g
+func (c Color) toItem() int {
+	return int(255 - c.g)
 }
-
-// ENEMIES
-const (
-	ENEMY_BAT = iota
-)
 
 func (c Color) toEnemy() byte {
 	return 255 - c.r
+}
+
+func (c Color) toNPC() byte {
+	return 254 - c.b
 }
 
 func (c Color) toGateLevel() byte {
@@ -89,6 +84,9 @@ func (c Color) isItem() bool {
 
 func (c Color) isGrass() bool {
 	return c.b == 0 && c.a == 50 && c.r == 0 && c.g == 0
+}
+func (c Color) isCarpet() bool {
+	return c.b == 0 && c.a == 150 && c.r == 0 && c.g == 0
 }
 func (c Color) isFence() bool {
 	return c.b == 0 && c.a == 100 && c.r == 0 && c.g == 0
@@ -105,6 +103,9 @@ func (c Color) isHole() bool {
 func (c Color) isEnemy() bool {
 	return c.r > 0 && c.a == 255 && c.g == 0 && c.b == 0
 }
+func (c Color) isNPC() bool {
+	return c.b > 0 && c.b < 255 && c.a == 255 && c.g == 0
+}
 func (c Color) isWall() bool {
 	return c.r == 0 && c.a == 255 && c.g == 0 && c.b == 0
 }
@@ -116,6 +117,17 @@ func (c Color) isGate() bool {
 }
 
 func (c Color) render(destroyed bool, x int, y int) string {
+	if c.isNPC() {
+		switch c.toNPC() {
+		case NPC_SIGN:
+			return blue("S")
+		default:
+			return blue("N")
+		}
+	}
+	if c.isCarpet() {
+		return red("@")
+	}
 	if c.isFence() {
 		return gray("+")
 	}
@@ -138,7 +150,7 @@ func (c Color) render(destroyed bool, x int, y int) string {
 		if destroyed {
 			return " "
 		}
-		return cyan("G")
+		return cyan("D")
 	}
 	if c.isWall() {
 		return "#"
@@ -157,6 +169,12 @@ func (c Color) render(destroyed bool, x int, y int) string {
 		switch c.toItem() {
 		case ITEM_POTION:
 			letter = "P"
+		case ITEM_SWORD1:
+			letter = "S"
+		case ITEM_HEAVY_ARMOR:
+			letter = "H"
+		default:
+			letter = "I"
 		}
 		return yellow(letter)
 	}
@@ -165,12 +183,29 @@ func (c Color) render(destroyed bool, x int, y int) string {
 		switch c.toEnemy() {
 		case ENEMY_BAT:
 			letter = "b"
+		case ENEMY_GHOSTS:
+			letter = "G"
+		case ENEMY_SKELETON:
+			letter = "s"
+		case ENEMY_MINOTAUR:
+			letter = "M"
+		case ENEMY_KING:
+			letter = "K"
 		}
 		return red(letter)
 	}
 	return " "
 }
 
+func (m *model) inCombatView() bool {
+	switch m.state {
+	case IN_COMBAT:
+		return true
+	case IN_NPC:
+		return true
+	}
+	return false
+}
 func (a *app) loadLevel(world string) {
 	file, err := os.Open("./map/" + world + ".txt")
 	if err != nil {
@@ -222,7 +257,25 @@ func (a *app) loadMeta(world string) {
 			a.links[world] = []string{line}
 			continue
 		}
-		a.links[world] = append(a.links[world], line)
+		if i < 4 {
+			a.links[world] = append(a.links[world], line)
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		coords := strings.Split(parts[0], "x")
+		x, err := strconv.Atoi(coords[0])
+		if err != nil {
+			panic(err)
+		}
+		y, err := strconv.Atoi(coords[1])
+		if err != nil {
+			panic(err)
+		}
+		a.dialogue[Position{
+			world: world,
+			x:     x,
+			y:     y,
+		}] = parts[1]
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -233,9 +286,11 @@ func (a *app) loadMeta(world string) {
 func main() {
 	a := new(app)
 	a.links = make(map[string]([]string))
+	a.dialogue = make(map[Position]string)
 	a.world = make(map[string]([16][40]Color))
 	a.loadLevels()
 	a.Positions = make(map[string]Position)
+	a.Levels = make(map[string]int)
 	a.Chans = make(map[string](chan tea.Msg))
 	go func() {
 		fmt.Println("I am the server!")
@@ -256,6 +311,8 @@ func main() {
 						break loop
 					}
 					switch msg := thing.(type) {
+					case levelMsg:
+						a.Levels[msg.id] = msg.level
 					case HoleMsg:
 						updates = append(updates, msg)
 						updated = true
@@ -308,7 +365,11 @@ func main() {
 }
 
 type (
-	errMsg  error
+	errMsg   error
+	levelMsg struct {
+		id    string
+		level int
+	}
 	moveMsg struct {
 		id  string
 		pos Position
@@ -373,11 +434,13 @@ type app struct {
 	*ssh.Server
 	progs      []*tea.Program
 	Positions  map[string]Position
+	Levels     map[string]int
 	Chans      map[string](chan tea.Msg)
 	ChansMutex sync.Mutex
 	StateMutex sync.RWMutex
 	world      map[string]([16][40]Color)
 	links      map[string]([]string)
+	dialogue   map[Position](string)
 	StartPos   Position
 }
 
@@ -399,26 +462,35 @@ func (a *app) ProgramHandler(s ssh.Session) *tea.Program {
 	}
 
 	m := model{
-		term:      pty.Term,
-		width:     pty.Window.Width,
-		height:    pty.Window.Height,
-		pos:       a.StartPos,
-		health:    7,
-		maxHealth: 7,
-		level:     1,
-		xp:        0,
-		state:     OVERWORLD,
-		destroyed: map[Position]bool{},
-		percent:   0.0,
-		progress:  progress.New(progress.WithScaledGradient("#FF7CCB", "#FDFF8C")),
+		term:           pty.Term,
+		width:          pty.Window.Width,
+		height:         pty.Window.Height,
+		pos:            a.StartPos,
+		roomStart:      a.StartPos,
+		health:         7,
+		maxHealth:      7,
+		level:          1,
+		xp:             0,
+		state:          OVERWORLD,
+		destroyed:      map[Position]bool{},
+		percent:        0.0,
+		progress:       progress.New(progress.WithSolidFill("63"), progress.WithColorProfile(termenv.ANSI256)),
+		progressHealth: progress.New(progress.WithSolidFill("1"), progress.WithColorProfile(termenv.ANSI256)),
+		inventory:      NewInventory(),
 	}
 	m.app = a
 	m.id = s.RemoteAddr().String() + s.User()
 	a.StateMutex.Lock()
 	a.Positions[m.id] = m.pos
+	a.Levels[m.id] = 1
 	a.StateMutex.Unlock()
+	m.progress.Width = 19
 	m.progress.ShowPercentage = false
-	m.progress.Width = 40
+	m.progressHealth.Width = 19
+	m.progressHealth.ShowPercentage = false
+	if strings.Split(s.RemoteAddr().String(), ":")[0] == "127.0.0.1" {
+		m.hacks = true
+	}
 
 	ch := make(chan tea.Msg, 100)
 	a.ChansMutex.Lock()
@@ -442,35 +514,41 @@ const (
 	OVERWORLD = iota
 	IN_INVENTORY
 	IN_COMBAT
+	IN_NPC
 )
 
 type model struct {
 	*app
-	serverChan chan tea.Msg
-	id         string
-	term       string
-	width      int
-	height     int
-	pos        Position
-	prev       Position
-	health     int
-	maxHealth  int
-	level      int
-	xp         int
-	state      int
-	falling    bool
-	enemy      *Enemy
-	destroyed  map[Position]bool
-	text       string
-	combattext string
-	selection  int
-	picker     PickerModel
-	progress   progress.Model
-	percent    float64
-	potions    int
+	serverChan     chan tea.Msg
+	id             string
+	term           string
+	width          int
+	height         int
+	pos            Position
+	roomStart      Position
+	prev           Position
+	health         int
+	maxHealth      int
+	level          int
+	xp             int
+	state          int
+	falling        bool
+	enemy          *Enemy
+	npc            *NPC
+	destroyed      map[Position]bool
+	text           string
+	combattext     string
+	selection      int
+	picker         PickerModel
+	progress       progress.Model
+	progressHealth progress.Model
+	percent        float64
+	inventory      Inventory
+	hacks          bool
 }
 
 func (m model) Init() tea.Cmd {
+	m.inventory.Init()
 	return nil
 }
 
@@ -494,6 +572,7 @@ func (m *model) doWarp() {
 	}
 	if warp != -1 {
 		m.pos.world = m.app.links[m.pos.world][warp]
+		m.roomStart = m.pos
 		m.text = ""
 	}
 }
@@ -508,12 +587,9 @@ func (m *model) pickupItems() {
 	}
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
 	if cell.isItem() {
-		switch cell.toItem() {
-		case ITEM_POTION:
-			m.destroyed[m.pos] = true
-			m.potions++
-			m.text = "Found a healing potion!"
-		}
+		m.destroyed[m.pos] = true
+		item := m.inventory.AddItem(cell.toItem())
+		m.text = fmt.Sprintf("Found %s!", item.name)
 	}
 }
 
@@ -549,17 +625,26 @@ func (m *model) checkTraps() tea.Cmd {
 
 func (m *model) updateOptions() {
 	m.picker.item = 0
+	if m.state == IN_NPC {
+		m.picker.items = []PickerItem{
+			{
+				text: "continue",
+			},
+		}
+		return
+	}
 	m.picker.items = []PickerItem{
 		{
-			text: "melee attack (fist)",
+			text: fmt.Sprintf("melee attack (%s)", m.inventory.Weapon().name),
 		},
 		{
 			text: "run away",
 		},
 	}
-	if m.potions > 0 {
+	count := m.inventory.Count(ITEM_POTION)
+	if count > 0 {
 		m.picker.items = append(m.picker.items, PickerItem{
-			text: fmt.Sprintf("healing potion (%d)", m.potions),
+			text: fmt.Sprintf("healing potion (%d)", count),
 		})
 	}
 }
@@ -592,16 +677,23 @@ func (m *model) isBlocked() bool {
 		return false
 	}
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
+	if cell.isNPC() {
+		m.state = IN_NPC
+		m.npc = createNPC(cell.toNPC(), m.app.dialogue[m.pos])
+		m.combattext = ""
+		m.updateOptions()
+		return true
+	}
 	if cell.isFence() {
 		return true
 	}
 	if cell.isGate() && m.level < int(cell.toGateLevel()) {
-		m.text = fmt.Sprintf("You must be level %d", cell.toGateLevel())
+		m.text = fmt.Sprintf("You must be level %d.", cell.toGateLevel())
 		return true
 	}
 	if cell.isGate() {
 		m.destroyed[m.pos] = true
-		m.text = "The gate opened!"
+		m.text = "The door opened!"
 		return false
 	}
 	if ok {
@@ -617,27 +709,28 @@ func (m *model) isBlocked() bool {
 	return false
 }
 
-type Enemy struct {
-	health    int
-	maxhealth int
-	name      string
-	art       string
-	level     int
-	ac        int
-	attack    string
-	damage    string
-}
-
 func (m *model) playerAc() int {
-	return m.level + 12
+	return m.inventory.ArmorClass()
 }
 
 func (m *model) playerAttack() int {
-	return Roll("1d20+5")
+	var advantage bool
+	if m.enemy.id == ENEMY_KING && m.inventory.Weapon().id == ITEM_KINGSLAYER {
+		advantage = true
+	}
+	roll1 := Roll(fmt.Sprintf("1d20+%d", m.inventory.Weapon().attackMod+4))
+	if !advantage {
+		return roll1
+	}
+	roll2 := Roll(fmt.Sprintf("1d20+%d", m.inventory.Weapon().attackMod+4))
+	if roll1 > roll2 {
+		return roll1
+	}
+	return roll2
 }
 
 func (m *model) playerDamage() int {
-	return Roll("1d4")
+	return Roll(m.inventory.Weapon().dmg)
 }
 
 func (m *model) move(x int, y int) tea.Cmd {
@@ -693,9 +786,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case HealingMsg:
-		m.potions--
+		m.inventory.Consume(ITEM_POTION)
 		m.updateOptions()
-		healing := Roll("2d4+4")
+		healing := Roll("2d4+2")
 		if healing > m.maxHealth-m.health {
 			healing = m.maxHealth - m.health
 		}
@@ -722,6 +815,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.xp += xpGained
 		for m.xp >= m.xpCurve(m.level+1) {
 			m.level++
+			m.send(levelMsg{
+				id:    m.id,
+				level: m.level,
+			})
 			rolledHealth := Roll("1d6+1")
 			m.maxHealth += rolledHealth
 			m.health += rolledHealth
@@ -754,10 +851,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case DeadMsg:
-		m.send(DeadMsg{
-			id: m.id,
+		m.pos = m.app.StartPos
+		m.text = ""
+		m.state = OVERWORLD
+		m.send(moveMsg{
+			id:  m.id,
+			pos: m.pos,
 		})
-		return m, tea.Quit
 
 	case YourTurnMsg:
 		m.combattext = ""
@@ -771,7 +871,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 	case RespawnMsg:
 		m.falling = false
-		m.pos = m.app.StartPos
+		m.pos = m.roomStart
 		m.text = ""
 		m.send(moveMsg{
 			id:  m.id,
@@ -786,6 +886,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 		m.combat = false
 		// 		m.destroyed[m.pos] = true
 		// 	}
+		case "0":
+			if m.hacks {
+				m.level++
+				m.send(levelMsg{
+					id:    m.id,
+					level: m.level,
+				})
+				rolledHealth := Roll("1d6+1")
+				m.maxHealth += rolledHealth
+				m.health += rolledHealth
+				m.text = "Level up (cheats)"
+			}
+
+		case "i", "e", "esc":
+			if m.state == OVERWORLD {
+				m.inventory.item = 0
+				m.state = IN_INVENTORY
+			} else if m.state == IN_INVENTORY {
+				m.state = OVERWORLD
+			}
 		case "left", "h", "a":
 			cmd = m.move(-1, 0)
 		case "right", "l", "d":
@@ -794,7 +914,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = m.move(0, -1)
 		case "down", "j", "s":
 			cmd = m.move(0, 1)
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			m.send(DeadMsg{
 				id: m.id,
 			})
@@ -802,18 +922,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	cmds = append(cmds, cmd)
-	if m.state == IN_COMBAT && len(m.combattext) == 0 {
+	if m.state == IN_INVENTORY {
+		m.inventory, cmd = m.inventory.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	if m.inCombatView() && len(m.combattext) == 0 {
 		m.picker, cmd = m.picker.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 	return m, tea.Batch(cmds...)
 }
 
+type Player struct {
+	pos   Position
+	level int
+}
+
 func (m model) View() string {
 	var mainBox = lipgloss.NewStyle().Width(40).Height(16).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color("63"))
-	players := []Position{}
+	players := []Player{}
 	m.app.StateMutex.RLock()
 	for id, pos := range m.app.Positions {
 		if m.pos.world != pos.world {
@@ -822,11 +951,14 @@ func (m model) View() string {
 		if id == m.id {
 			continue
 		}
-		players = append(players, pos)
+		players = append(players, Player{pos: pos, level: m.app.Levels[id]})
 	}
 	m.app.StateMutex.RUnlock()
 	var s string
-	if m.state != IN_COMBAT {
+	if m.state == IN_INVENTORY {
+		s = m.inventory.View()
+		s = mainBox.Render(s)
+	} else if !m.inCombatView() {
 		for r, row := range m.app.world[m.pos.world] {
 		outer:
 			for c, cell := range row {
@@ -839,9 +971,13 @@ func (m model) View() string {
 					s += cell.render(destroyed, c, r)
 					continue outer
 				}
-				for _, pos := range players {
-					if r == pos.y && c == pos.x {
-						s += blue("O")
+				for _, p := range players {
+					if r == p.pos.y && c == p.pos.x {
+						levelT := fmt.Sprintf("%d", p.level)
+						if p.level > 9 {
+							levelT = "+"
+						}
+						s += blue(levelT)
 						continue outer
 					}
 				}
@@ -854,9 +990,15 @@ func (m model) View() string {
 		s = mainBox.Render(s)
 	} else {
 		// combat oh no
-		s += fmt.Sprintf("You have entered combat with %s!\n\n", m.enemy.name)
-		s += fmt.Sprintf("Enemy health: %d / %d\n", m.enemy.health, m.enemy.maxhealth)
-		s += m.enemy.art + "\n"
+		if m.state == IN_COMBAT {
+			s += fmt.Sprintf("You entered combat with %s!\n\n", m.enemy.name)
+			s += fmt.Sprintf("Enemy health: %d / %d\n", m.enemy.health, m.enemy.maxhealth)
+			s += m.enemy.art + "\n"
+		} else {
+			s += fmt.Sprintf("You see %s.\n\n", m.npc.name)
+			s += m.npc.art + "\n"
+			s += fmt.Sprintf("\"%s\"\n\n", m.npc.dialogue)
+		}
 		if len(m.combattext) > 0 {
 			s += m.combattext
 		} else {
@@ -865,11 +1007,15 @@ func (m model) View() string {
 		s = mainBox.Render(s)
 	}
 
-	s += "\n "
-	s += m.progress.ViewAs(m.percent)
 	s += "\n"
-	s += fmt.Sprintf(" Level:  %d\n", m.level)
-	s += fmt.Sprintf(" Health: %d / %d\n", m.health, m.maxHealth)
+	var xpBar string
+	var healthBar string
+	xpBar += " " + m.progress.ViewAs(m.percent)
+	xpBar += fmt.Sprintf("\n Level:  %d\n ", m.level)
+	healthBar += "  " + m.progressHealth.ViewAs(float64(m.health)/float64(m.maxHealth))
+	healthBar += fmt.Sprintf("\n  Health: %d / %d\n", m.health, m.maxHealth)
+	bars := lipgloss.JoinHorizontal(lipgloss.Top, xpBar, healthBar)
+	s += bars
 	s += red(fmt.Sprintf("\n           %s\n", m.text))
 	return s
 }

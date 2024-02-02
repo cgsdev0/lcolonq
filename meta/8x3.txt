@@ -2,3 +2,6 @@
 8x4
 9x3
 8x2
+2x7 placeholder 0
+26x10 placeholder 0
+26x13 placeholder 2

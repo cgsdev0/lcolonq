@@ -2,3 +2,5 @@
 8x6
 9x5
 8x4
+20x3 placeholder 0
+13x13 placeholder 2

@@ -32,6 +32,8 @@ func (m *PickerModel) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "enter":
 		switch strings.Split(m.items[m.item].text, " ")[0] {
+		case "continue":
+			return RunCmd
 		case "run":
 			return RunCmd
 		case "melee":
