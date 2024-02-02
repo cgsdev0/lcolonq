@@ -2,6 +2,6 @@
 8x4
 9x3
 8x2
-2x7 placeholder 0
-26x10 placeholder 0
-26x13 placeholder 2
+2x7 <---- West to Castle
+26x10 Dave's House
+26x13 it is me, dave. i live by the cave. it's to the south.

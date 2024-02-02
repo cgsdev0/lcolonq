@@ -886,6 +886,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 		m.combat = false
 		// 		m.destroyed[m.pos] = true
 		// 	}
+		case " ":
+			if m.hacks {
+				m.text = m.pos.world
+			}
 		case "0":
 			if m.hacks {
 				m.level++
