@@ -27,9 +27,17 @@ import (
 	"github.com/muesli/termenv"
 )
 
-const (
+func parsePort(port string) int {
+	i, err := strconv.Atoi(port)
+	if err != nil {
+		return 23234
+	}
+	return i
+}
+
+var (
 	host = "0.0.0.0"
-	port = 23234
+	port = parsePort(os.Getenv("PORT"))
 )
 
 var (
@@ -283,6 +291,46 @@ func (a *app) loadMeta(world string) {
 	}
 }
 
+func MiddlewareWithProgramHandler(bth bm.ProgramHandler, cp termenv.Profile) wish.Middleware {
+	// XXX: This is a hack to make sure the default Termenv output color
+	// profile is set before the program starts. Ideally, we want a Lip Gloss
+	// renderer per session.
+	lipgloss.SetColorProfile(cp)
+	return func(sh ssh.Handler) ssh.Handler {
+		return func(s ssh.Session) {
+			p := bth(s)
+			if p != nil {
+				_, windowChanges, _ := s.Pty()
+				ctx, cancel := context.WithCancel(s.Context())
+				go func() {
+					for {
+						select {
+						case <-ctx.Done():
+							if p != nil {
+								p.Send(DisconnectMsg{})
+								p.Quit()
+								return
+							}
+						case w := <-windowChanges:
+							if p != nil {
+								p.Send(tea.WindowSizeMsg{Width: w.Width, Height: w.Height})
+							}
+						}
+					}
+				}()
+				if _, err := p.Run(); err != nil {
+					log.Error("app exit with error", "error", err)
+				}
+				// p.Kill() will force kill the program if it's still running,
+				// and restore the terminal to its original state in case of a
+				// tui crash
+				p.Kill()
+				cancel()
+			}
+			sh(s)
+		}
+	}
+}
 func main() {
 	a := new(app)
 	a.links = make(map[string]([]string))
@@ -337,7 +385,7 @@ func main() {
 		wish.WithAddress(fmt.Sprintf("%s:%d", host, port)),
 		wish.WithHostKeyPath(".ssh/term_info_ed25519"),
 		wish.WithMiddleware(
-			bm.MiddlewareWithProgramHandler(a.ProgramHandler, termenv.ANSI256),
+			MiddlewareWithProgramHandler(a.ProgramHandler, termenv.ANSI256),
 			lm.Middleware(),
 		),
 	)
@@ -394,6 +442,8 @@ type (
 	HoleMsg struct {
 		id  string
 		pos Position
+	}
+	DisconnectMsg struct {
 	}
 	DeadMsg struct {
 		id string
@@ -877,8 +927,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			id:  m.id,
 			pos: m.pos,
 		})
-	case moveMsg:
-		// do something
+	case DisconnectMsg:
+		m.send(DeadMsg{
+			id: m.id,
+		})
 	case tea.KeyMsg:
 		switch msg.String() {
 		// case "enter":
