@@ -27,13 +27,14 @@ import (
 )
 
 const (
-	host = "localhost"
+	host = "0.0.0.0"
 	port = 23234
 )
 
 var (
 	red      = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render
 	green    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render
+	cyan     = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Render
 	yellow   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render
 	blue     = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Render
 	gray     = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render
@@ -77,11 +78,21 @@ func (c Color) toEnemy() byte {
 	return 255 - c.r
 }
 
+func (c Color) toGateLevel() byte {
+	return 255 - c.g
+}
+
 // 255 different items
 func (c Color) isItem() bool {
 	return c.g > 0 && c.a == 255 && c.r == 0 && c.b == 0
 }
 
+func (c Color) isGrass() bool {
+	return c.b == 0 && c.a == 50 && c.r == 0 && c.g == 0
+}
+func (c Color) isFence() bool {
+	return c.b == 0 && c.a == 100 && c.r == 0 && c.g == 0
+}
 func (c Color) isSpawn() bool {
 	return c.b == 255 && c.a == 255 && c.r == 0 && c.g == 0
 }
@@ -97,8 +108,38 @@ func (c Color) isEnemy() bool {
 func (c Color) isWall() bool {
 	return c.r == 0 && c.a == 255 && c.g == 0 && c.b == 0
 }
+func (c Color) isHeal() bool {
+	return c.r == 0 && c.a == 255 && c.g == 255 && c.b == 255
+}
+func (c Color) isGate() bool {
+	return c.r == 0 && c.a == 255 && c.g < 255 && c.g > 200 && c.b == 255
+}
 
-func (c Color) render(destroyed bool) string {
+func (c Color) render(destroyed bool, x int, y int) string {
+	if c.isFence() {
+		return gray("+")
+	}
+	if c.isGrass() {
+		hash := (y*14 + x*3) % 8
+		switch hash {
+		case 0:
+			return green("\"")
+		case 1:
+			return green(",")
+		case 2:
+			return green("'")
+		case 3:
+			return green(".")
+		default:
+			return " "
+		}
+	}
+	if c.isGate() {
+		if destroyed {
+			return " "
+		}
+		return cyan("G")
+	}
 	if c.isWall() {
 		return "#"
 	}
@@ -366,7 +407,7 @@ func (a *app) ProgramHandler(s ssh.Session) *tea.Program {
 		maxHealth: 7,
 		level:     1,
 		xp:        0,
-		combat:    false,
+		state:     OVERWORLD,
 		destroyed: map[Position]bool{},
 		percent:   0.0,
 		progress:  progress.New(progress.WithScaledGradient("#FF7CCB", "#FDFF8C")),
@@ -396,6 +437,13 @@ type Position struct {
 	y     int
 }
 
+// States
+const (
+	OVERWORLD = iota
+	IN_INVENTORY
+	IN_COMBAT
+)
+
 type model struct {
 	*app
 	serverChan chan tea.Msg
@@ -409,7 +457,7 @@ type model struct {
 	maxHealth  int
 	level      int
 	xp         int
-	combat     bool
+	state      int
 	falling    bool
 	enemy      *Enemy
 	destroyed  map[Position]bool
@@ -446,6 +494,7 @@ func (m *model) doWarp() {
 	}
 	if warp != -1 {
 		m.pos.world = m.app.links[m.pos.world][warp]
+		m.text = ""
 	}
 }
 
@@ -468,6 +517,13 @@ func (m *model) pickupItems() {
 	}
 }
 
+func (m *model) doHeals() {
+	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
+	if cell.isHeal() {
+		m.health = m.maxHealth
+		m.text = "You feel refreshed."
+	}
+}
 func (m *model) revealSecrets() {
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
 	if cell.isSecret() {
@@ -515,16 +571,14 @@ func (m *model) startCombat() {
 	if cell.isEnemy() {
 		m.text = ""
 		m.combattext = ""
-		m.combat = true
+		m.state = IN_COMBAT
 		m.enemy = createEnemy(cell.toEnemy())
 		m.updateOptions()
 	}
 }
 
 func (m *model) isBlocked() bool {
-	if _, ok := m.destroyed[m.pos]; ok {
-		return false
-	}
+	_, ok := m.destroyed[m.pos]
 	if m.pos.y < 0 {
 		return false
 	}
@@ -538,6 +592,25 @@ func (m *model) isBlocked() bool {
 		return false
 	}
 	cell := m.app.world[m.pos.world][m.pos.y][m.pos.x]
+	if cell.isFence() {
+		return true
+	}
+	if cell.isGate() && m.level < int(cell.toGateLevel()) {
+		m.text = fmt.Sprintf("You must be level %d", cell.toGateLevel())
+		return true
+	}
+	if cell.isGate() {
+		m.destroyed[m.pos] = true
+		m.text = "The gate opened!"
+		return false
+	}
+	if ok {
+		if cell.isHole() {
+			return true
+		} else {
+			return false
+		}
+	}
 	if cell.isWall() {
 		return true
 	}
@@ -572,7 +645,7 @@ func (m *model) move(x int, y int) tea.Cmd {
 	if m.falling {
 		return nil
 	}
-	if m.combat {
+	if m.state != OVERWORLD {
 		return nil
 	}
 	m.prev = m.pos
@@ -586,6 +659,7 @@ func (m *model) move(x int, y int) tea.Cmd {
 		m.startCombat()
 		cmd = m.checkTraps()
 		m.revealSecrets()
+		m.doHeals()
 		m.pickupItems()
 		m.send(moveMsg{
 			id:  m.id,
@@ -658,7 +732,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		xpHave := m.xp - base
 		m.percent = float64(xpHave) / float64(xpNeeded)
 		fmt.Printf("have %d want %d percent %f\n", xpHave, xpNeeded, m.percent)
-		m.combat = false
+		m.state = OVERWORLD
 		m.destroyed[m.pos] = true
 		m.text = fmt.Sprintf("You defeated %s!", m.enemy.name)
 
@@ -689,7 +763,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.combattext = ""
 	case RunMsg:
 		m.updateOptions()
-		m.combat = false
+		m.state = OVERWORLD
 		m.pos = m.prev
 		m.send(moveMsg{
 			id:  m.id,
@@ -728,7 +802,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	cmds = append(cmds, cmd)
-	if m.combat && len(m.combattext) == 0 {
+	if m.state == IN_COMBAT && len(m.combattext) == 0 {
 		m.picker, cmd = m.picker.Update(msg)
 		cmds = append(cmds, cmd)
 	}
@@ -752,7 +826,7 @@ func (m model) View() string {
 	}
 	m.app.StateMutex.RUnlock()
 	var s string
-	if !m.combat {
+	if m.state != IN_COMBAT {
 		for r, row := range m.app.world[m.pos.world] {
 		outer:
 			for c, cell := range row {
@@ -762,7 +836,7 @@ func (m model) View() string {
 				}
 				_, destroyed := m.destroyed[Position{x: c, y: r, world: m.pos.world}]
 				if (cell.isEnemy() || cell.isSecret()) && !destroyed {
-					s += cell.render(destroyed)
+					s += cell.render(destroyed, c, r)
 					continue outer
 				}
 				for _, pos := range players {
@@ -771,7 +845,7 @@ func (m model) View() string {
 						continue outer
 					}
 				}
-				s += cell.render(destroyed)
+				s += cell.render(destroyed, c, r)
 			}
 			s += "\n"
 		}

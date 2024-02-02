@@ -1,5 +1,17 @@
 [[task]]
   id = "dev"
   type = "long"
-  cmd = "go run ."
+  dependencies = ["server", "levels"]
+
+[[task]]
+  id = "server"
+  type = "long"
+  cmd = "kill -9 $(lsof -i:23234 | grep LISTEN | tr -s ' ' | cut -d' ' -f2); go run ."
   watch = [ "*.go" ]
+  triggers = ["levels"]
+
+[[task]]
+  id = "levels"
+  type = "short"
+  cmd = "cd slicer; node index.js"
+  watch = [ "levels.ase" ]
