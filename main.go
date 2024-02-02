@@ -467,13 +467,10 @@ type (
 		id string
 	}
 	ChatClearMsg struct {
+		msg string
 	}
 )
 
-var ChatClearCmd tea.Cmd = func() tea.Msg {
-	time.Sleep(time.Second * 2)
-	return ChatClearMsg{}
-}
 var RunCmd tea.Cmd = func() tea.Msg {
 	return RunMsg{}
 }
@@ -963,11 +960,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			id: m.id,
 		})
 	case ChatClearMsg:
-		m.chattext = ""
-		m.send(ChatMsg{
-			id:  m.id,
-			msg: "",
-		})
+		if m.chattext == msg.msg {
+			m.chattext = ""
+			m.send(ChatMsg{
+				id:  m.id,
+				msg: "",
+			})
+		}
 	case tea.KeyMsg:
 		if !m.chat.Focused() {
 			switch msg.String() {
@@ -1042,6 +1041,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chattext = m.chat.Value()
 				m.chat.Blur()
 				m.chat.SetValue("")
+				var ChatClearCmd tea.Cmd = func() tea.Msg {
+					time.Sleep(time.Second * 2)
+					return ChatClearMsg{
+						msg: m.chattext,
+					}
+				}
 				return m, ChatClearCmd
 			}
 		}
